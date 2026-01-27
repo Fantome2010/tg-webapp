@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Telegram WebApp</title>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; background:#0b0b0f; color:#fff; }
+    header { padding: 14px 16px; border-bottom: 1px solid #222; position: sticky; top:0; background:#0b0b0f; }
+    header b { font-size: 16px; }
+    .tabs { display:flex; gap:10px; padding: 10px 16px; border-bottom: 1px solid #222; overflow:auto; }
+    .tab { padding: 8px 10px; border:1px solid #2a2a2a; border-radius: 10px; cursor:pointer; white-space:nowrap; }
+    .tab.active { border-color:#5a7cff; }
+    main { padding: 14px 16px; }
+    .search { width: 100%; padding: 10px 12px; border-radius: 12px; border:1px solid #2a2a2a; background:#111; color:#fff; outline:none; }
+    .grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+    .card { border:1px solid #2a2a2a; border-radius: 14px; overflow:hidden; background:#0f0f16; cursor:pointer; }
+    .poster { height: 120px; background: linear-gradient(135deg, #2c2c44, #151523); display:flex; align-items:center; justify-content:center; opacity: .95; }
+    .card .meta { padding: 10px 10px 12px; }
+    .title { font-weight: 700; font-size: 13px; line-height:1.2; margin-bottom: 6px; }
+    .desc { font-size: 12px; opacity: .8; height: 32px; overflow:hidden; }
+    .tags { margin-top: 8px; display:flex; gap:6px; flex-wrap:wrap; }
+    .tag { font-size: 11px; padding: 3px 7px; border:1px solid #2a2a2a; border-radius:999px; opacity:.9; }
+    .btnrow { display:flex; gap:8px; flex-wrap:wrap; margin-top: 12px; }
+    button { padding: 10px 12px; border-radius: 12px; border:1px solid #2a2a2a; background:#141424; color:#fff; cursor:pointer; }
+    button.primary { border-color:#5a7cff; }
+    .muted { opacity:.75; font-size: 12px; }
+    .back { margin-bottom: 10px; display:inline-flex; align-items:center; gap:8px; cursor:pointer; opacity:.9; }
+    .hr { height:1px; background:#222; margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <b id="hdr">Hello World</b><div class="muted" id="subhdr"></div>
+  </header>
+
+  <div class="tabs" id="tabs"></div>
+
+  <main id="root"></main>
+
+  <script>
+    // ---- Telegram init ----
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
+
+    // ---- Config: API base (позже подключим FastAPI) ----
+    // Если API нет — будет работать на мок-данных из массива.
+    const API_BASE = "http://localhost:8001";
+
+    // ---- State ----
+    const state = {
+      page: "catalog",      // catalog | search | favorites | profile | title | player
+      q: "",
+      titles: [],
+      favorites: new Set(),
+      current: null,
+      currentEpisode: 1,
+    };
+
+    const PAGES = [
+      { key: "catalog",   label: "Каталог" },
+      { key: "search",    label: "Поиск" },
+      { key: "favorites", label: "Избранное" },
+      { key: "profile",   label: "Профиль" },
+    ];
+
+    const MOCK_TITLES = Array.from({length: 14}).map((_, i) => ({
+      id: i+1,
+      title: `Тайтл #${i+1}`,
+      poster: "",
+      description: "Короткое описание. Потом подставишь нормальные данные из API.",
+      episodes_count: (i % 12) + 1,
+      tags: ["anime", (i%2? "action":"comedy"), (i%3? "2024":"2023")]
+    }));
+
+    function setHeader(text, sub="") {
+      document.getElementById("hdr").textContent = text;
+      document.getElementById("subhdr").textContent = sub;
+    }
+
+    function renderTabs() {
+      const el = document.getElementById("tabs");
+      el.innerHTML = "";
+      for (const p of PAGES) {
+        const b = document.createElement("div");
+        b.className = "tab" + (state.page === p.key ? " active" : "");
+        b.textContent = p.label;
+        b.onclick = () => { state.page = p.key; state.current = null; render(); };
+        el.appendChild(b);
+      }
+    }
+
+    async function loadTitles() {
+      // 1) Если есть API_BASE — пробуем /titles
+      if (API_BASE) {
+        try {
+          const r = await fetch(`${API_BASE}/titles`);
+          if (!r.ok) throw new Error("Bad status");
+          const data = await r.json();
+          state.titles = data;
+          return;
+        } catch (e) {
+          console.log("API unavailable, fallback to mock", e);
+        }
+      }
+      // 2) fallback mock
+      state.titles = MOCK_TITLES;
+    }
+
+    function filteredTitles(list) {
+      const q = state.q.trim().toLowerCase();
+      if (!q) return list;
+      return list.filter(t => t.title.toLowerCase().includes(q));
+    }
+
+    function TitleCard(t) {
+      const el = document.createElement("div");
+      el.className = "card";
+      el.onclick = () => { state.page = "title"; state.current = t; render(); };
+
+      const poster = document.createElement("div");
+      poster.className = "poster";
+      poster.textContent = "POSTER";
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+
+      const tt = document.createElement("div");
+      tt.className = "title";
+      tt.textContent = t.title;
+
+      const dd = document.createElement("div");
+      dd.className = "desc";
+      dd.textContent = t.description;
+
+      const tags = document.createElement("div");
+      tags.className = "tags";
+      (t.tags || []).slice(0,4).forEach(x => {
+        const s = document.createElement("span");
+        s.className = "tag";
+        s.textContent = x;
+        tags.appendChild(s);
+      });
+
+      meta.appendChild(tt);
+      meta.appendChild(dd);
+      meta.appendChild(tags);
+
+      el.appendChild(poster);
+      el.appendChild(meta);
+      return el;
+    }
+
+    function renderCatalog() {
+      setHeader("Каталог", "Hello World внутри Telegram WebApp");
+      const root = document.getElementById("root");
+      root.innerHTML = "";
+
+      const grid = document.createElement("div");
+      grid.className = "grid";
+      for (const t of state.titles) grid.appendChild(TitleCard(t));
+      root.appendChild(grid);
+    }
+
+    function renderSearch() {
+      setHeader("Поиск", "Фильтрация по названию");
+      const root = document.getElementById("root");
+      root.innerHTML = "";
+
+      const input = document.createElement("input");
+      input.className = "search";
+      input.placeholder = "Введите название...";
+      input.value = state.q;
+      input.oninput = (e) => { state.q = e.target.value; render(); };
+
+      root.appendChild(input);
+
+      const list = filteredTitles(state.titles);
+      const grid = document.createElement("div");
+      grid.className = "grid";
+      for (const t of list) grid.appendChild(TitleCard(t));
+      root.appendChild(grid);
+    }
+
+    function renderFavorites() {
+      setHeader("Избранное", "Пока локально в памяти");
+      const root = document.getElementById("root");
+      root.innerHTML = "";
+
+      const favs = state.titles.filter(t => state.favorites.has(t.id));
+      if (!favs.length) {
+        const p = document.createElement("div");
+        p.className = "muted";
+        p.textContent = "Пусто. Открой тайтл и добавь в избранное.";
+        root.appendChild(p);
+        return;
+      }
+      const grid = document.createElement("div");
+      grid.className = "grid";
+      favs.forEach(t => grid.appendChild(TitleCard(t)));
+      root.appendChild(grid);
+    }
+
+    function renderProfile() {
+      const user = tg?.initDataUnsafe?.user;
+      setHeader("Профиль", user ? `@${user.username || ""} ${user.first_name || ""}` : "Пользователь не определён");
+      const root = document.getElementById("root");
+      root.innerHTML = "";
+
+      const box = document.createElement("div");
+      box.className = "muted";
+      box.innerHTML = `
+        <div>initData: ${tg?.initData ? "есть" : "нет"}</div>
+        <div>platform: ${tg?.platform || "—"}</div>
+      `;
+      root.appendChild(box);
+    }
+
+    function renderTitle() {
+      const t = state.current;
+      if (!t) { state.page = "catalog"; return render(); }
+
+      setHeader(t.title, `${t.episodes_count} серий`);
+      const root = document.getElementById("root");
+      root.innerHTML = "";
+
+      const back = document.createElement("div");
+      back.className = "back";
+      back.textContent = "← Назад";
+      back.onclick = () => { state.page = "catalog"; state.current = null; render(); };
+      root.appendChild(back);
+
+      const p = document.createElement("div");
+      p.textContent = t.description;
+      p.className = "muted";
+      root.appendChild(p);
+
+      const hr = document.createElement("div");
+      hr.className = "hr";
+      root.appendChild(hr);
+
+      const btnrow = document.createElement("div");
+      btnrow.className = "btnrow";
+
+      const favBtn = document.createElement("button");
+      const isFav = state.favorites.has(t.id);
+      favBtn.textContent = isFav ? "Убрать из избранного" : "В избранное";
+      favBtn.className = "primary";
+      favBtn.onclick = () => {
+        if (state.favorites.has(t.id)) state.favorites.delete(t.id);
+        else state.favorites.add(t.id);
+        render();
+      };
+
+      const watchBtn = document.createElement("button");
+      watchBtn.textContent = "Смотреть";
+      watchBtn.onclick = () => { state.page = "player"; state.currentEpisode = 1; render(); };
+
+      btnrow.appendChild(favBtn);
+      btnrow.appendChild(watchBtn);
+      root.appendChild(btnrow);
+    }
+
+    function renderPlayer() {
+      const t = state.current;
+      if (!t) { state.page = "catalog"; return render(); }
+
+      setHeader("Плеер", t.title);
+      const root = document.getElementById("root");
+      root.innerHTML = "";
+
+      const back = document.createElement("div");
+      back.className = "back";
+      back.textContent = "← К тайтлу";
+      back.onclick = () => { state.page = "title"; render(); };
+      root.appendChild(back);
+
+      const stub = document.createElement("div");
+      stub.style.padding = "14px";
+      stub.style.border = "1px solid #2a2a2a";
+      stub.style.borderRadius = "14px";
+      stub.style.background = "#0f0f16";
+      stub.innerHTML = `<b>Видео будет тут</b><div class="muted">Серия: ${state.currentEpisode}</div>`;
+      root.appendChild(stub);
+
+      const row = document.createElement("div");
+      row.className = "btnrow";
+
+      const maxEp = t.episodes_count || 1;
+      for (let i=1; i<=Math.min(maxEp, 12); i++) {
+        const b = document.createElement("button");
+        b.textContent = `Серия ${i}`;
+        if (i === state.currentEpisode) b.className = "primary";
+        b.onclick = () => { state.currentEpisode = i; render(); };
+        row.appendChild(b);
+      }
+
+      root.appendChild(row);
+    }
+
+    function render() {
+      renderTabs();
+      if (state.page === "catalog") return renderCatalog();
+      if (state.page === "search") return renderSearch();
+      if (state.page === "favorites") return renderFavorites();
+      if (state.page === "profile") return renderProfile();
+      if (state.page === "title") return renderTitle();
+      if (state.page === "player") return renderPlayer();
+    }
+
+    (async function init() {
+      await loadTitles();
+      render();
+    })();
+  </script>
+</body>
+</html>
